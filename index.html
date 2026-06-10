@@ -93,9 +93,22 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
 .due-btn.has-date{color:var(--text)}
 .due-btn.overdue{color:var(--danger);font-weight:600}
 .due-btn.today{color:#fdab3d;font-weight:600}
-.del-btn{color:var(--text-dim);opacity:.4;font-size:15px;padding:6px}
-.row:hover .del-btn{opacity:1}
-.del-btn:hover{color:var(--danger)}
+.menu-btn{color:var(--text-dim);opacity:.4;font-size:15px;padding:6px;border-radius:4px}
+.row:hover .menu-btn{opacity:1}
+.menu-btn:hover{background:var(--bg)}
+.drag{cursor:grab;color:var(--text-dim);opacity:0;font-size:11px;padding:2px 0 2px 2px;flex-shrink:0;user-select:none;-webkit-user-select:none}
+.row:hover .drag{opacity:.55}
+.row.drop-above{box-shadow:inset 0 3px 0 var(--accent)}
+.row.drop-below{box-shadow:inset 0 -3px 0 var(--accent)}
+.add-row.drop-above{box-shadow:inset 0 3px 0 var(--accent)}
+.arch-row{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--border-light);color:var(--text-dim)}
+.arch-row:first-child{border-top:none}
+.arch-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arch-row .when{font-size:12px;white-space:nowrap}
+.restore-btn{color:var(--accent);font-size:13px;padding:4px 8px;border-radius:4px}
+.restore-btn:hover{background:var(--accent-dim)}
+.arch-del{opacity:.5;padding:4px 6px}
+.arch-del:hover{color:var(--danger);opacity:1}
 .detail{grid-column:1/-1;background:var(--bg);border-top:1px solid var(--border-light);padding:10px 14px 12px}
 .detail .sub{display:flex;align-items:center;gap:8px;padding:4px 0}
 .detail .sub input[type=text]{flex:1;background:none;border:1px solid transparent;border-radius:4px;padding:4px}
@@ -169,13 +182,14 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
 @media (max-width:640px){
   main{padding:10px}
   .col-hdr{display:none}
-  .row{grid-template-columns:1fr 96px;grid-template-rows:auto auto;padding-bottom:4px}
+  .row{grid-template-columns:1fr 96px 34px;grid-template-rows:auto auto;padding-bottom:4px}
   .row-name{grid-column:1/-1}
-  .status-cell{grid-row:2;align-self:center;padding-left:9px}
+  .status-cell{grid-row:2;grid-column:1;align-self:center;padding-left:9px}
   .status-pill{min-height:26px;border-radius:4px;font-size:12px}
   .due-cell{grid-row:2;grid-column:2;padding-right:2px}
-  .del-btn{display:none}
-  .detail{grid-row:3}
+  .menu-btn{grid-row:2;grid-column:3;opacity:.7}
+  .drag{display:none}
+  .detail{grid-row:3;grid-column:1/-1}
   .kcol{min-width:200px;width:200px}
 }
 </style>
@@ -344,6 +358,43 @@ function findItem(id){
   return null;
 }
 function touch(item){ item.updatedAt = new Date().toISOString(); }
+function groupById(id){
+  for (const b of data.boards) { const g = b.groups.find(x => x.id === id); if (g) return g; }
+  return null;
+}
+
+let dragItemId = null;
+const archOpen = new Set();   // boards whose archive section is expanded (this session)
+
+// move an item to tg at index (index is relative to tg BEFORE removal is adjusted)
+function moveItemTo(itemId, tg, index){
+  const f = findItem(itemId);
+  if (!f || !tg) return;
+  const cur = f.group.items.indexOf(f.item);
+  f.group.items.splice(cur, 1);
+  if (f.group === tg && index > cur) index--;
+  index = Math.max(0, Math.min(index, tg.items.length));
+  tg.items.splice(index, 0, f.item);
+  touch(f.item); markDirty(); render();
+}
+
+function archiveItem(board, group, item, save = true){
+  (board.archive ||= []).push({ ...item, fromGroup: group.name, archivedAt: new Date().toISOString() });
+  group.items = group.items.filter(i => i !== item);
+  if (save) { markDirty(); render(); }
+}
+
+function restoreItem(board, archId){
+  const i = (board.archive || []).findIndex(a => a.id === archId);
+  if (i < 0) return;
+  const { fromGroup, archivedAt, ...item } = board.archive.splice(i, 1)[0];
+  let g = board.groups.find(x => x.name === fromGroup) || board.groups[0];
+  if (!g) { g = { id: uid(), name: fromGroup || "Restored", color: GROUP_COLORS[0], items: [] }; board.groups.push(g); }
+  item.updatedAt = new Date().toISOString();
+  g.items.push(item);
+  markDirty(); render();
+  toast("Restored to " + g.name);
+}
 
 /* ---------------- rendering ---------------- */
 
@@ -398,7 +449,28 @@ function renderTable(){
     html += `<form class="add-row" data-additem="${g.id}"><input placeholder="+ Add task" autocomplete="off"></form>
       </div></div>`;
   }
+  const doneCount = b.groups.reduce((n,g) => n + g.items.filter(i => i.status === "done").length, 0);
+  if (doneCount) html += `<button class="add-group-btn" id="archDone" style="margin-bottom:10px">&#128230; Archive all done tasks (${doneCount})</button>`;
   html += `<button class="add-group-btn" id="addGroup">+ Add group</button>`;
+  const arch = b.archive || [];
+  if (arch.length) {
+    const open = archOpen.has(b.id);
+    html += `<div class="group ${open?"":"collapsed"}" style="margin-top:26px">
+      <div class="group-hdr">
+        <button class="group-collapse" data-archtoggle="${b.id}" style="color:var(--text-dim)">&#9660;</button>
+        <span style="font-size:16px;font-weight:600;color:var(--text-dim);padding:2px 6px">Archive</span>
+        <span class="group-count">${arch.length}</span>
+      </div>
+      <div class="rows">` +
+      arch.slice().reverse().map(a => `<div class="arch-row">
+        <span class="arch-name">${esc(a.name)}</span>
+        <span class="gtag" style="background:var(--text-dim)">${esc(a.fromGroup || "")}</span>
+        <span class="when">${esc(fmtDue((a.archivedAt||"").slice(0,10)))}</span>
+        <button class="restore-btn" data-restore="${a.id}">Restore</button>
+        <button class="arch-del" data-archdel="${a.id}" title="Delete forever">&#10005;</button>
+      </div>`).join("") +
+      `</div></div>`;
+  }
   main.innerHTML = html;
   wireTable(b);
 }
@@ -409,14 +481,15 @@ function rowHTML(g, it){
   const doneSubs = subs.filter(s => s.done).length;
   const isExp = expanded.has(it.id);
   const dueCls = dueClass(it);
-  let html = `<div class="row ${it.status==="done"?"done-item":""}">
+  let html = `<div class="row ${it.status==="done"?"done-item":""}" data-row="${it.id}" data-g="${g.id}">
     <div class="row-name">
+      <span class="drag" draggable="true" data-drag="${it.id}" title="Drag to move">&#10495;</span>
       <button class="expander ${subs.length?"has-subs":""}" data-expand="${it.id}" title="Subitems & notes">${subs.length ? doneSubs+"/"+subs.length : (isExp?"&#9650;":"&#9656;")}</button>
       <input class="item-name" value="${esc(it.name)}" data-irename="${it.id}">
     </div>
     <div class="status-cell"><button class="status-pill" style="background:${st.color}" data-status="${it.id}">${esc(st.label)}</button></div>
     <div class="due-cell"><button class="due-btn ${it.due?"has-date":""} ${dueCls}" data-due="${it.id}">${esc(fmtDue(it.due))}</button></div>
-    <button class="del-btn" data-del="${it.id}" title="Delete">&#10005;</button>`;
+    <button class="menu-btn" data-imenu="${it.id}" title="Task actions">&#8943;</button>`;
   if (isExp) {
     html += `<div class="detail">`;
     for (const s of subs) html += `<div class="sub ${s.done?"done":""}">
@@ -463,11 +536,66 @@ function wireTable(b){
   });
   main.querySelectorAll("[data-status]").forEach(el => el.onclick = (e) => statusMenu(e, el.dataset.status));
   main.querySelectorAll("[data-due]").forEach(el => el.onclick = () => pickDue(el));
-  main.querySelectorAll("[data-del]").forEach(el => el.onclick = () => {
-    const f = findItem(el.dataset.del);
-    if (!f) return;
-    if (!confirm(`Delete "${f.item.name}"?`)) return;
-    f.group.items = f.group.items.filter(i => i.id !== f.item.id);
+  main.querySelectorAll("[data-imenu]").forEach(el => el.onclick = (e) => itemMenu(e, el.dataset.imenu));
+
+  // --- drag & drop: reorder within a group, drop into another group ---
+  const clearCues = () => main.querySelectorAll(".drop-above,.drop-below").forEach(el => el.classList.remove("drop-above","drop-below"));
+  main.querySelectorAll("[data-drag]").forEach(h => {
+    h.addEventListener("dragstart", (e) => {
+      dragItemId = h.dataset.drag;
+      e.dataTransfer.setData("text/plain", dragItemId);
+      e.dataTransfer.effectAllowed = "move";
+    });
+    h.addEventListener("dragend", () => { dragItemId = null; clearCues(); });
+  });
+  main.querySelectorAll(".row").forEach(row => {
+    row.addEventListener("dragover", (e) => {
+      if (!dragItemId || row.dataset.row === dragItemId) return;
+      e.preventDefault(); clearCues();
+      const r = row.getBoundingClientRect();
+      row.classList.add(e.clientY < r.top + r.height/2 ? "drop-above" : "drop-below");
+    });
+    row.addEventListener("drop", (e) => {
+      if (!dragItemId || row.dataset.row === dragItemId) return;
+      e.preventDefault();
+      const r = row.getBoundingClientRect();
+      const before = e.clientY < r.top + r.height/2;
+      const tg = groupById(row.dataset.g);
+      const ti = tg.items.findIndex(i => i.id === row.dataset.row);
+      moveItemTo(dragItemId, tg, before ? ti : ti + 1);
+      clearCues();
+    });
+  });
+  main.querySelectorAll(".add-row").forEach(f => {
+    f.addEventListener("dragover", (e) => { if (!dragItemId) return; e.preventDefault(); clearCues(); f.classList.add("drop-above"); });
+    f.addEventListener("dragleave", () => f.classList.remove("drop-above"));
+    f.addEventListener("drop", (e) => {
+      if (!dragItemId) return;
+      e.preventDefault();
+      const tg = groupById(f.dataset.additem);
+      moveItemTo(dragItemId, tg, tg.items.length);
+      clearCues();
+    });
+  });
+
+  // --- archive ---
+  const ad = document.getElementById("archDone");
+  if (ad) ad.onclick = () => {
+    for (const g of [...b.groups]) for (const it of [...g.items]) if (it.status === "done") archiveItem(b, g, it, false);
+    markDirty(); render();
+    toast("Done tasks archived");
+  };
+  main.querySelectorAll("[data-archtoggle]").forEach(el => el.onclick = () => {
+    const id = el.dataset.archtoggle;
+    archOpen.has(id) ? archOpen.delete(id) : archOpen.add(id);
+    render();
+  });
+  main.querySelectorAll("[data-restore]").forEach(el => el.onclick = () => restoreItem(b, el.dataset.restore));
+  main.querySelectorAll("[data-archdel]").forEach(el => el.onclick = () => {
+    const a = (b.archive || []).find(x => x.id === el.dataset.archdel);
+    if (!a) return;
+    if (!confirm(`Permanently delete "${a.name}"?`)) return;
+    b.archive = b.archive.filter(x => x.id !== a.id);
     markDirty(); render();
   });
   main.querySelectorAll("[data-expand]").forEach(el => el.onclick = () => {
@@ -555,15 +683,58 @@ function statusMenu(e, itemId){
   });
 }
 
+function itemMenu(e, itemId){
+  e.stopPropagation();
+  const f = findItem(itemId);
+  if (!f) return;
+  const moveBtns = data.boards
+    .flatMap(b => b.groups.map(g => ({ b, g })))
+    .filter(x => x.g.id !== f.group.id)
+    .map(x => `<button class="plain" data-mv="${x.g.id}">&#8594; ${esc(x.b.name)}: ${esc(x.g.name)}</button>`)
+    .join("");
+  const m = openMenu(e,
+    `<button class="plain" data-act="up">Move up</button>
+     <button class="plain" data-act="down">Move down</button>
+     ${moveBtns}
+     <button class="plain" data-act="arch">&#128230; Archive</button>
+     <button class="plain danger" data-act="del">Delete</button>`);
+  m.querySelector('[data-act="up"]').onclick = () => {
+    const i = f.group.items.indexOf(f.item);
+    if (i > 0) moveItemTo(itemId, f.group, i - 1);
+  };
+  m.querySelector('[data-act="down"]').onclick = () => {
+    const i = f.group.items.indexOf(f.item);
+    if (i < f.group.items.length - 1) moveItemTo(itemId, f.group, i + 2);
+  };
+  m.querySelectorAll("[data-mv]").forEach(el => el.onclick = () => {
+    const tg = groupById(el.dataset.mv);
+    moveItemTo(itemId, tg, tg.items.length);
+    toast("Moved to " + tg.name);
+  });
+  m.querySelector('[data-act="arch"]').onclick = () => archiveItem(f.board, f.group, f.item);
+  m.querySelector('[data-act="del"]').onclick = () => {
+    if (!confirm(`Delete "${f.item.name}"? (Archive keeps it recoverable)`)) return;
+    f.group.items = f.group.items.filter(i => i.id !== f.item.id);
+    markDirty(); render();
+  };
+}
+
 function groupMenu(e, board, groupId){
   e.stopPropagation();
   const g = board.groups.find(x => x.id === groupId);
   const colorBtns = GROUP_COLORS.map(c => `<button data-color="${c}" style="background:${c};height:22px;flex:1;border-radius:4px"></button>`).join("");
+  const doneInGroup = g.items.filter(i => i.status === "done").length;
   const m = openMenu(e,
     `<div style="display:flex;gap:4px">${colorBtns}</div>
      <button class="plain" data-act="up">Move up</button>
      <button class="plain" data-act="down">Move down</button>
+     ${doneInGroup ? `<button class="plain" data-act="archdone">&#128230; Archive done items (${doneInGroup})</button>` : ""}
      <button class="plain danger" data-act="del">Delete group</button>`);
+  const adBtn = m.querySelector('[data-act="archdone"]');
+  if (adBtn) adBtn.onclick = () => {
+    for (const it of [...g.items]) if (it.status === "done") archiveItem(board, g, it, false);
+    markDirty(); render();
+  };
   m.querySelectorAll("[data-color]").forEach(el => el.onclick = () => { g.color = el.dataset.color; markDirty(); render(); });
   m.querySelector('[data-act="up"]').onclick = () => moveGroup(board, g, -1);
   m.querySelector('[data-act="down"]').onclick = () => moveGroup(board, g, 1);
