@@ -175,6 +175,22 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
 .setup-msg.ok{color:#00a25b}
 .linklike{color:var(--accent);background:none;text-decoration:underline;margin-top:14px;font-size:13px}
 
+/* ---------- status editor ---------- */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:250;display:flex;align-items:flex-start;justify-content:center;padding:7vh 16px 16px;overflow:auto}
+.editor{background:var(--surface);border-radius:12px;box-shadow:var(--shadow);padding:20px;width:100%;max-width:460px}
+.editor h2{font-size:16px;margin-bottom:2px}
+.editor .sub-h{color:var(--text-dim);font-size:12px;margin-bottom:14px}
+.st-row{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.st-swatch{width:32px;height:32px;border-radius:6px;flex-shrink:0;border:none;cursor:pointer}
+.st-row input[type=text]{flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 8px;background:var(--bg);min-width:0}
+.st-done{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);white-space:nowrap;cursor:pointer}
+.st-mv{color:var(--text-dim);padding:2px 3px;font-size:11px}
+.st-mv:hover{color:var(--text)}
+.st-x{color:var(--text-dim);padding:2px 6px}
+.st-x:hover{color:var(--danger)}
+.editor .foot{display:flex;gap:10px;margin-top:16px}
+.editor .foot .primary{margin-top:0;flex:1}
+.editor .linklike{margin-top:0;align-self:center}
 .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--toast-bg);color:var(--toast-text);padding:10px 18px;border-radius:8px;font-size:13px;box-shadow:var(--shadow);z-index:300;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
 .toast.show{opacity:1}
 
@@ -220,13 +236,14 @@ const LS_CFG = "taskboard-config";
 const LS_CACHE = "taskboard-cache";
 const LS_UI = "taskboard-ui";
 
-const STATUSES = [
-  { id: "not_started", label: "Not Started",   color: "#c4c4c4" },
-  { id: "working",     label: "Working on it", color: "#fdab3d" },
-  { id: "stuck",       label: "Stuck",         color: "#e2445c" },
-  { id: "done",        label: "Done",          color: "#00c875" },
+const DEFAULT_STATUSES = [
+  { id: "not_started", label: "Not Started",   color: "#c4c4c4", done: false },
+  { id: "working",     label: "Working on it", color: "#fdab3d", done: false },
+  { id: "stuck",       label: "Stuck",         color: "#e2445c", done: false },
+  { id: "done",        label: "Done",          color: "#00c875", done: true  },
 ];
 const GROUP_COLORS = ["#579bfc","#a25ddc","#00c875","#fdab3d","#e2445c","#66ccff","#ff642e","#7f5347"];
+const STATUS_COLORS = ["#c4c4c4","#fdab3d","#e2445c","#00c875","#579bfc","#a25ddc","#66ccff","#ff642e","#ffcb00","#7f5347"];
 
 let cfg = loadJSON(LS_CFG) || null;          // {token, repo, path}
 let ui  = loadJSON(LS_UI)  || { view: "table", board: null, collapsed: {} };
@@ -243,7 +260,16 @@ function storeJSON(k,v){ localStorage.setItem(k, JSON.stringify(v)); }
 function saveUI(){ storeJSON(LS_UI, ui); }
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function statusOf(id){ return STATUSES.find(s => s.id === id) || STATUSES[0]; }
+function statusesFor(board){ return board.statuses || DEFAULT_STATUSES; }
+function statusOf(board, id){ const ss = statusesFor(board); return ss.find(s => s.id === id) || ss[0]; }
+function isDone(board, item){ return !!statusesFor(board).find(s => s.id === item.status)?.done; }
+function doneStatusOf(board){ return statusesFor(board).find(s => s.done); }
+// give boards their own editable status list (older files predate per-board statuses)
+function migrateStatuses(){
+  let changed = false;
+  for (const b of data.boards) if (!b.statuses) { b.statuses = DEFAULT_STATUSES.map(s => ({ ...s })); changed = true; }
+  return changed;
+}
 function todayStr(){ const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 function fmtDue(due){
   if (!due) return "+ date";
@@ -256,8 +282,8 @@ function starterData(){
     version: 1,
     updatedAt: new Date().toISOString(),
     boards: [
-      { id: "work",     name: "Work",     groups: [ { id: uid(), name: "To Do", color: "#579bfc", items: [] } ] },
-      { id: "personal", name: "Personal", groups: [ { id: uid(), name: "To Do", color: "#00c875", items: [] } ] },
+      { id: "work",     name: "Work",     statuses: DEFAULT_STATUSES.map(s => ({ ...s })), groups: [ { id: uid(), name: "To Do", color: "#579bfc", items: [] } ] },
+      { id: "personal", name: "Personal", statuses: DEFAULT_STATUSES.map(s => ({ ...s })), groups: [ { id: uid(), name: "To Do", color: "#00c875", items: [] } ] },
     ],
   };
 }
@@ -330,6 +356,7 @@ async function refresh(showToast){
     const res = await ghGet(cfg);
     if (res.missing) throw new Error("tasks file missing");
     data = res.doc; sha = res.sha;
+    if (migrateStatuses()) markDirty();
     storeJSON(LS_CACHE, data);
     setSync("ok", "synced");
     render();
@@ -375,6 +402,13 @@ function moveItemTo(itemId, tg, index){
   if (f.group === tg && index > cur) index--;
   index = Math.max(0, Math.min(index, tg.items.length));
   tg.items.splice(index, 0, f.item);
+  // crossing boards: the status id may not exist there — remap to the
+  // target board's equivalent (a done status stays done-ish)
+  const tb = data.boards.find(bd => bd.groups.includes(tg));
+  if (tb !== f.board && !statusesFor(tb).some(s => s.id === f.item.status)) {
+    const wasDone = isDone(f.board, f.item);
+    f.item.status = (wasDone && doneStatusOf(tb)?.id) || statusesFor(tb)[0].id;
+  }
   touch(f.item); markDirty(); render();
 }
 
@@ -445,11 +479,11 @@ function renderTable(){
       </div>
       <div class="col-hdr"><span>Task</span><span style="text-align:center">Status</span><span style="text-align:center">Due</span><span></span></div>
       <div class="rows">`;
-    for (const it of g.items) html += rowHTML(g, it);
+    for (const it of g.items) html += rowHTML(b, g, it);
     html += `<form class="add-row" data-additem="${g.id}"><input placeholder="+ Add task" autocomplete="off"></form>
       </div></div>`;
   }
-  const doneCount = b.groups.reduce((n,g) => n + g.items.filter(i => i.status === "done").length, 0);
+  const doneCount = b.groups.reduce((n,g) => n + g.items.filter(i => isDone(b, i)).length, 0);
   if (doneCount) html += `<button class="add-group-btn" id="archDone" style="margin-bottom:10px">&#128230; Archive all done tasks (${doneCount})</button>`;
   html += `<button class="add-group-btn" id="addGroup">+ Add group</button>`;
   const arch = b.archive || [];
@@ -475,13 +509,13 @@ function renderTable(){
   wireTable(b);
 }
 
-function rowHTML(g, it){
-  const st = statusOf(it.status);
+function rowHTML(b, g, it){
+  const st = statusOf(b, it.status);
   const subs = it.subitems || [];
   const doneSubs = subs.filter(s => s.done).length;
   const isExp = expanded.has(it.id);
-  const dueCls = dueClass(it);
-  let html = `<div class="row ${it.status==="done"?"done-item":""}" data-row="${it.id}" data-g="${g.id}">
+  const dueCls = dueClass(b, it);
+  let html = `<div class="row ${isDone(b,it)?"done-item":""}" data-row="${it.id}" data-g="${g.id}">
     <div class="row-name">
       <span class="drag" draggable="true" data-drag="${it.id}" title="Drag to move">&#10495;</span>
       <button class="expander ${subs.length?"has-subs":""}" data-expand="${it.id}" title="Subitems & notes">${subs.length ? doneSubs+"/"+subs.length : (isExp?"&#9650;":"&#9656;")}</button>
@@ -502,8 +536,8 @@ function rowHTML(g, it){
   return html + `</div>`;
 }
 
-function dueClass(it){
-  if (!it.due || it.status === "done") return "";
+function dueClass(b, it){
+  if (!it.due || isDone(b, it)) return "";
   const t = todayStr();
   if (it.due < t) return "overdue";
   if (it.due === t) return "today";
@@ -526,7 +560,7 @@ function wireTable(b){
     if (!name) return;
     const g = b.groups.find(x => x.id === f.dataset.additem);
     const now = new Date().toISOString();
-    g.items.push({ id: uid(), name, status: "not_started", due: null, notes: "", subitems: [], createdAt: now, updatedAt: now });
+    g.items.push({ id: uid(), name, status: statusesFor(b)[0].id, due: null, notes: "", subitems: [], createdAt: now, updatedAt: now });
     markDirty(); render();
     main.querySelector(`[data-additem="${g.id}"] input`)?.focus();
   });
@@ -581,7 +615,7 @@ function wireTable(b){
   // --- archive ---
   const ad = document.getElementById("archDone");
   if (ad) ad.onclick = () => {
-    for (const g of [...b.groups]) for (const it of [...g.items]) if (it.status === "done") archiveItem(b, g, it, false);
+    for (const g of [...b.groups]) for (const it of [...g.items]) if (isDone(b, it)) archiveItem(b, g, it, false);
     markDirty(); render();
     toast("Done tasks archived");
   };
@@ -676,11 +710,15 @@ function openMenu(e, html){
 
 function statusMenu(e, itemId){
   e.stopPropagation();
-  const m = openMenu(e, STATUSES.map(s => `<button style="background:${s.color}" data-set="${s.id}">${esc(s.label)}</button>`).join(""));
+  const f = findItem(itemId);
+  if (!f) return;
+  const m = openMenu(e,
+    statusesFor(f.board).map(s => `<button style="background:${s.color}" data-set="${s.id}">${esc(s.label)}</button>`).join("") +
+    `<button class="plain" data-customize>&#9881; Customize statuses…</button>`);
   m.querySelectorAll("[data-set]").forEach(el => el.onclick = () => {
-    const f = findItem(itemId);
-    if (f) { f.item.status = el.dataset.set; touch(f.item); markDirty(); render(); }
+    f.item.status = el.dataset.set; touch(f.item); markDirty(); render();
   });
+  m.querySelector("[data-customize]").onclick = () => { closeMenu(); statusEditor(f.board); };
 }
 
 function itemMenu(e, itemId){
@@ -723,7 +761,7 @@ function groupMenu(e, board, groupId){
   e.stopPropagation();
   const g = board.groups.find(x => x.id === groupId);
   const colorBtns = GROUP_COLORS.map(c => `<button data-color="${c}" style="background:${c};height:22px;flex:1;border-radius:4px"></button>`).join("");
-  const doneInGroup = g.items.filter(i => i.status === "done").length;
+  const doneInGroup = g.items.filter(i => isDone(board, i)).length;
   const m = openMenu(e,
     `<div style="display:flex;gap:4px">${colorBtns}</div>
      <button class="plain" data-act="up">Move up</button>
@@ -732,7 +770,7 @@ function groupMenu(e, board, groupId){
      <button class="plain danger" data-act="del">Delete group</button>`);
   const adBtn = m.querySelector('[data-act="archdone"]');
   if (adBtn) adBtn.onclick = () => {
-    for (const it of [...g.items]) if (it.status === "done") archiveItem(board, g, it, false);
+    for (const it of [...g.items]) if (isDone(board, it)) archiveItem(board, g, it, false);
     markDirty(); render();
   };
   m.querySelectorAll("[data-color]").forEach(el => el.onclick = () => { g.color = el.dataset.color; markDirty(); render(); });
@@ -755,15 +793,16 @@ function moveGroup(board, g, dir){
 function renderKanban(){
   const b = activeBoard();
   let html = `<div class="kanban">`;
-  for (const st of STATUSES) {
+  const ss = statusesFor(b);
+  for (const st of ss) {
     const cards = [];
-    for (const g of b.groups) for (const it of g.items) if ((it.status || "not_started") === st.id) cards.push({ g, it });
+    for (const g of b.groups) for (const it of g.items) if (statusOf(b, it.status).id === st.id) cards.push({ g, it });
     html += `<div class="kcol" data-kcol="${st.id}">
       <div class="kcol-hdr" style="background:${st.color}"><span>${esc(st.label)}</span><span>${cards.length}</span></div>
       <div class="kcol-body">` +
       cards.map(({g,it}) => `<div class="kcard" draggable="true" data-kcard="${it.id}">
           <div class="kname">${esc(it.name)}</div>
-          <div class="kmeta"><span class="gtag" style="background:${g.color}">${esc(g.name)}</span>${it.due ? `<span class="${dueClass(it)==="overdue"?"due-late":""}">${esc(fmtDue(it.due))}</span>` : ""}</div>
+          <div class="kmeta"><span class="gtag" style="background:${g.color}">${esc(g.name)}</span>${it.due ? `<span class="${dueClass(b,it)==="overdue"?"due-late":""}">${esc(fmtDue(it.due))}</span>` : ""}</div>
         </div>`).join("") +
       `</div></div>`;
   }
@@ -790,7 +829,7 @@ function renderWeek(){
   const weekStr = week.getFullYear()+"-"+String(week.getMonth()+1).padStart(2,"0")+"-"+String(week.getDate()).padStart(2,"0");
   const buckets = { overdue: [], today: [], week: [], later: [], nodate: [] };
   for (const b of data.boards) for (const g of b.groups) for (const it of g.items) {
-    if (it.status === "done") continue;
+    if (isDone(b, it)) continue;
     const entry = { b, g, it };
     if (!it.due) buckets.nodate.push(entry);
     else if (it.due < t) buckets.overdue.push(entry);
@@ -821,7 +860,10 @@ function renderWeek(){
   main.innerHTML = any ? html : `<div class="empty">Nothing on your plate — add tasks in the Table view 🎉</div>`;
   main.querySelectorAll("[data-wkdone]").forEach(el => el.onclick = () => {
     const f = findItem(el.dataset.wkdone);
-    if (f) { f.item.status = "done"; touch(f.item); markDirty(); render(); toast("Done: " + f.item.name); }
+    if (!f) return;
+    const ds = doneStatusOf(f.board);
+    if (!ds) { toast("No done-type status on " + f.board.name + " — add one in Customize statuses"); return; }
+    f.item.status = ds.id; touch(f.item); markDirty(); render(); toast("Done: " + f.item.name);
   });
 }
 
@@ -877,6 +919,84 @@ function renderSetup(existing){
     localStorage.removeItem(LS_CFG); localStorage.removeItem(LS_CACHE);
     cfg = null; data = null; sha = null; render();
   };
+}
+
+/* ----- status editor ----- */
+function statusEditor(board){
+  if (!board.statuses) board.statuses = DEFAULT_STATUSES.map(s => ({ ...s }));
+  const ov = document.createElement("div");
+  ov.className = "overlay";
+  document.body.appendChild(ov);
+  const close = () => { ov.remove(); render(); };
+  ov.onclick = (e) => { if (e.target === ov) close(); };
+
+  function usageCount(statusId){
+    let n = 0;
+    for (const g of board.groups) n += g.items.filter(i => i.status === statusId).length;
+    n += (board.archive || []).filter(a => a.status === statusId).length;
+    return n;
+  }
+  function remap(fromId, toId){
+    for (const g of board.groups) for (const it of g.items) if (it.status === fromId) { it.status = toId; touch(it); }
+    for (const a of board.archive || []) if (a.status === fromId) a.status = toId;
+  }
+
+  function draw(){
+    const ss = board.statuses;
+    ov.innerHTML = `<div class="editor">
+      <h2>Statuses — ${esc(board.name)}</h2>
+      <div class="sub-h">Click the color to change it. “Done” statuses get strikethrough, leave My Week, and are picked up by Archive-all-done.</div>
+      ${ss.map((s, i) => `<div class="st-row">
+        <button class="st-swatch" style="background:${s.color}" data-c="${i}" title="Change color"></button>
+        <input type="text" value="${esc(s.label)}" data-l="${i}">
+        <label class="st-done"><input type="checkbox" ${s.done?"checked":""} data-d="${i}">done</label>
+        <button class="st-mv" data-u="${i}" ${i===0?"disabled":""}>&#9650;</button>
+        <button class="st-mv" data-w="${i}" ${i===ss.length-1?"disabled":""}>&#9660;</button>
+        <button class="st-x" data-x="${i}" ${ss.length<=1?"disabled":""} title="Delete status">&#10005;</button>
+      </div>`).join("")}
+      <div class="foot">
+        <button class="linklike" id="stAdd">+ Add status</button>
+        <button class="primary" id="stClose">Close</button>
+      </div>
+    </div>`;
+    ov.querySelectorAll("[data-c]").forEach(el => el.onclick = () => {
+      const s = ss[+el.dataset.c];
+      s.color = STATUS_COLORS[(STATUS_COLORS.indexOf(s.color) + 1) % STATUS_COLORS.length];
+      markDirty(); draw();
+    });
+    ov.querySelectorAll("[data-l]").forEach(el => el.onchange = () => {
+      const s = ss[+el.dataset.l];
+      if (el.value.trim()) { s.label = el.value.trim(); markDirty(); }
+    });
+    ov.querySelectorAll("[data-d]").forEach(el => el.onchange = () => {
+      ss[+el.dataset.d].done = el.checked; markDirty();
+    });
+    ov.querySelectorAll("[data-u]").forEach(el => el.onclick = () => {
+      const i = +el.dataset.u; [ss[i-1], ss[i]] = [ss[i], ss[i-1]]; markDirty(); draw();
+    });
+    ov.querySelectorAll("[data-w]").forEach(el => el.onclick = () => {
+      const i = +el.dataset.w; [ss[i+1], ss[i]] = [ss[i], ss[i+1]]; markDirty(); draw();
+    });
+    ov.querySelectorAll("[data-x]").forEach(el => el.onclick = () => {
+      const i = +el.dataset.x;
+      const s = ss[i];
+      const n = usageCount(s.id);
+      const fallback = ss.find(x => x !== s);
+      if (n && !confirm(`${n} task(s) use "${s.label}" — they'll be set to "${fallback.label}". Delete it?`)) return;
+      remap(s.id, fallback.id);
+      ss.splice(i, 1);
+      markDirty(); draw();
+    });
+    ov.querySelector("#stAdd").onclick = () => {
+      ss.push({ id: uid(), label: "New Status", color: STATUS_COLORS[ss.length % STATUS_COLORS.length], done: false });
+      markDirty(); draw();
+      const inputs = ov.querySelectorAll("[data-l]");
+      const last = inputs[inputs.length-1];
+      last.focus(); last.select();
+    };
+    ov.querySelector("#stClose").onclick = close;
+  }
+  draw();
 }
 
 /* ----- theme ----- */
