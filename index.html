@@ -15,8 +15,18 @@
   --bg:#f6f7fb; --surface:#ffffff; --text:#323338; --text-dim:#676879;
   --border:#d0d4e4; --border-light:#e6e9ef; --accent:#0073ea; --accent-dim:#cce5ff;
   --danger:#e2445c; --shadow:0 4px 12px rgba(0,0,0,.08);
+  --kcol:#eceef5; --toast-bg:#323338; --toast-text:#fff;
   --radius:8px;
 }
+html.dark{
+  --bg:#181b34; --surface:#232847; --text:#e6e9f5; --text-dim:#9ba2c0;
+  --border:#4b5178; --border-light:#343a5e; --accent:#4da9ff; --accent-dim:#1f3a5f;
+  --shadow:0 4px 14px rgba(0,0,0,.45);
+  --kcol:#1f2440; --toast-bg:#e6e9f5; --toast-text:#181b34;
+}
+html.dark ::placeholder{color:#6d7494}
+html.dark .rows,html.dark .wk-list{box-shadow:0 1px 3px rgba(0,0,0,.3)}
+html.dark .kcard{box-shadow:0 1px 3px rgba(0,0,0,.35)}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
 body{
@@ -111,7 +121,7 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
 
 /* ---------- kanban ---------- */
 .kanban{display:flex;gap:12px;overflow-x:auto;align-items:flex-start;padding-bottom:12px}
-.kcol{background:#eceef5;border-radius:var(--radius);min-width:240px;width:240px;flex-shrink:0}
+.kcol{background:var(--kcol);border-radius:var(--radius);min-width:240px;width:240px;flex-shrink:0}
 .kcol-hdr{color:#fff;font-weight:600;padding:8px 12px;border-radius:var(--radius) var(--radius) 0 0;display:flex;justify-content:space-between}
 .kcol-body{padding:8px;display:flex;flex-direction:column;gap:8px;min-height:60px}
 .kcol.dragover .kcol-body{outline:2px dashed var(--accent);outline-offset:-4px;border-radius:6px}
@@ -152,7 +162,7 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
 .setup-msg.ok{color:#00a25b}
 .linklike{color:var(--accent);background:none;text-decoration:underline;margin-top:14px;font-size:13px}
 
-.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--text);color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;box-shadow:var(--shadow);z-index:300;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--toast-bg);color:var(--toast-text);padding:10px 18px;border-radius:8px;font-size:13px;box-shadow:var(--shadow);z-index:300;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
 .toast.show{opacity:1}
 
 /* ---------- mobile ---------- */
@@ -175,6 +185,7 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
   <div class="hdr-top">
     <div class="logo"><span class="dot"></span>TaskBoard</div>
     <div class="sync" id="sync"><span class="ind"></span><span id="syncTxt">loading</span></div>
+    <button class="icon-btn" id="themeBtn" title="Theme: auto"></button>
     <button class="icon-btn" id="refreshBtn" title="Refresh from GitHub">&#x21bb;</button>
     <button class="icon-btn" id="settingsBtn" title="Settings">&#9881;</button>
   </div>
@@ -205,6 +216,7 @@ const GROUP_COLORS = ["#579bfc","#a25ddc","#00c875","#fdab3d","#e2445c","#66ccff
 
 let cfg = loadJSON(LS_CFG) || null;          // {token, repo, path}
 let ui  = loadJSON(LS_UI)  || { view: "table", board: null, collapsed: {} };
+if (!ui.theme) ui.theme = "auto";            // auto | dark | light
 let data = null;                              // the tasks document
 let sha = null;                               // git blob sha of tasks.json
 let dirty = false;
@@ -695,6 +707,25 @@ function renderSetup(existing){
     cfg = null; data = null; sha = null; render();
   };
 }
+
+/* ----- theme ----- */
+const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");
+const THEME_ICONS = { auto: "◐", dark: "☾", light: "☀︎" };
+function applyTheme(){
+  const dark = ui.theme === "dark" || (ui.theme === "auto" && darkMedia.matches);
+  document.documentElement.classList.toggle("dark", dark);
+  document.querySelector('meta[name="theme-color"]').content = dark ? "#181b34" : "#323338";
+  const btn = document.getElementById("themeBtn");
+  btn.textContent = THEME_ICONS[ui.theme];
+  btn.title = "Theme: " + ui.theme;
+}
+document.getElementById("themeBtn").onclick = () => {
+  ui.theme = { auto: "dark", dark: "light", light: "auto" }[ui.theme];
+  saveUI(); applyTheme();
+  toast("Theme: " + ui.theme);
+};
+darkMedia.addEventListener("change", () => { if (ui.theme === "auto") applyTheme(); });
+applyTheme();
 
 /* ----- toast ----- */
 let toastTimer = null;
