@@ -644,7 +644,7 @@ function renderWeek(){
 
 /* ----- setup / settings ----- */
 function renderSetup(existing){
-  const c = existing || { token: "", repo: "", path: "tasks.json" };
+  const c = existing || { token: "", repo: "krburchel/taskboard-data", path: "tasks.json" };
   main.innerHTML = `<div class="panel">
     <h1>${existing ? "Settings" : "Welcome to TaskBoard"}</h1>
     <p>Tasks are stored as <code>tasks.json</code> in a private GitHub repo so every device (and your agents) sees the same board.</p>
