@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""tb — TaskBoard CLI for agents and humans.
+
+Talks to the TaskBoard data file (tasks.json in a GitHub repo) via the
+GitHub Contents API, handling sha read-modify-write and 409-conflict
+retries internally. Designed so an agent never has to touch raw JSON.
+
+Env:
+  TASKBOARD_TOKEN  (required) fine-grained PAT, Contents read/write on the data repo
+  TASKBOARD_REPO   (default: krburchel/taskboard-data)
+  TASKBOARD_PATH   (default: tasks.json)
+
+Run `tb help` for commands.
+"""
+import json, os, sys, base64, time, secrets, datetime
+import urllib.request, urllib.error
+
+REPO  = os.environ.get("TASKBOARD_REPO", "krburchel/taskboard-data")
+PATH  = os.environ.get("TASKBOARD_PATH", "tasks.json")
+TOKEN = os.environ.get("TASKBOARD_TOKEN") or os.environ.get("GITHUB_TOKEN")
+API   = f"https://api.github.com/repos/{REPO}/contents/{PATH}"
+
+DEFAULT_STATUSES = [
+    {"id": "not_started", "label": "Not Started",   "color": "#c4c4c4", "done": False},
+    {"id": "working",     "label": "Working on it", "color": "#fdab3d", "done": False},
+    {"id": "stuck",       "label": "Stuck",         "color": "#e2445c", "done": False},
+    {"id": "done",        "label": "Done",          "color": "#00c875", "done": True},
+]
+
+def die(msg, code=1):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+def today():
+    return datetime.date.today().isoformat()
+
+def uid():
+    return format(int(time.time() * 1000), "x") + secrets.token_hex(3)
+
+# ---------------- GitHub I/O ----------------
+
+def gh(method="GET", body=None):
+    url = API + (f"?t={int(time.time())}" if method == "GET" else "")
+    req = urllib.request.Request(url, method=method)
+    req.add_header("Authorization", "Bearer " + TOKEN)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    data = json.dumps(body).encode() if body is not None else None
+    if data:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, data) as r:
+        return json.load(r)
+
+def fetch():
+    j = gh()
+    doc = json.loads(base64.b64decode(j["content"]))
+    return doc, j["sha"]
+
+def put(doc, sha, message):
+    doc["updatedAt"] = now_iso()
+    content = base64.b64encode(
+        json.dumps(doc, indent=2, ensure_ascii=False).encode()
+    ).decode()
+    gh("PUT", {"message": "agent: " + message, "content": content, "sha": sha})
+
+def mutate(fn, message):
+    """fetch -> fn(doc) -> put, retrying the whole cycle on sha conflicts."""
+    last = None
+    for _ in range(4):
+        doc, sha = fetch()
+        out = fn(doc)
+        try:
+            put(doc, sha, message)
+            return out
+        except urllib.error.HTTPError as e:
+            if e.code in (409, 422):
+                last = e
+                time.sleep(1)
+                continue
+            raise
+    die(f"write kept conflicting after retries ({last})")
+
+# ---------------- model helpers ----------------
+
+def statuses_for(board):
+    return board.get("statuses") or DEFAULT_STATUSES
+
+def status_of(board, sid):
+    ss = statuses_for(board)
+    return next((s for s in ss if s["id"] == sid), ss[0])
+
+def is_done(board, item):
+    s = next((s for s in statuses_for(board) if s["id"] == item.get("status")), None)
+    return bool(s and s.get("done"))
+
+def done_status(board):
+    return next((s for s in statuses_for(board) if s.get("done")), None)
+
+def boards(doc):
+    return doc["boards"]
+
+def get_board(doc, name):
+    for b in boards(doc):
+        if b["id"].lower() == name.lower() or b["name"].lower() == name.lower():
+            return b
+    die(f"no board '{name}' (have: {', '.join(b['id'] for b in boards(doc))})")
+
+def find_item(doc, ref, include_archive=False):
+    """Find an item by id prefix. Returns (board, group_or_None, item).
+    group is None when the item was found in a board's archive."""
+    hits = []
+    for b in boards(doc):
+        for g in b["groups"]:
+            for it in g["items"]:
+                if it["id"].startswith(ref):
+                    hits.append((b, g, it))
+        if include_archive:
+            for a in b.get("archive", []):
+                if a["id"].startswith(ref):
+                    hits.append((b, None, a))
+    if not hits:
+        die(f"no task matching id '{ref}'")
+    if len(hits) > 1:
+        die(f"id '{ref}' is ambiguous ({len(hits)} matches) — use more characters")
+    return hits[0]
+
+def fmt_item(b, g, it):
+    st = status_of(b, it.get("status"))
+    due = it.get("due") or "-"
+    flag = ""
+    if it.get("due") and not is_done(b, it):
+        if it["due"] < today():
+            flag = " OVERDUE"
+        elif it["due"] == today():
+            flag = " TODAY"
+    subs = it.get("subitems") or []
+    subtxt = f"  subs:{sum(1 for s in subs if s.get('done'))}/{len(subs)}" if subs else ""
+    return (f"  {it['id']}  [{st['label']}]  due:{due}{flag}{subtxt}  {it['name']}")
+
+# ---------------- commands ----------------
+
+def cmd_info(args):
+    doc, _ = fetch()
+    for b in boards(doc):
+        n = sum(len(g["items"]) for g in b["groups"])
+        print(f"board {b['id']} ({b['name']}) — {n} active, {len(b.get('archive', []))} archived")
+        print("  statuses: " + ", ".join(
+            f"{s['id']}『{s['label']}』" + ("(done)" if s.get("done") else "")
+            for s in statuses_for(b)))
+        for g in b["groups"]:
+            print(f"  group: {g['name']} ({len(g['items'])})")
+
+def cmd_list(args):
+    doc, _ = fetch()
+    bs = [get_board(doc, args[0])] if args else boards(doc)
+    for b in bs:
+        for g in b["groups"]:
+            items = [it for it in g["items"] if "--all" in sys.argv or not is_done(b, it)]
+            if not items:
+                continue
+            print(f"[{b['id']}] {g['name']}")
+            for it in items:
+                print(fmt_item(b, g, it))
+
+def cmd_week(args):
+    doc, _ = fetch()
+    t = today()
+    horizon = (datetime.date.today() + datetime.timedelta(days=7)).isoformat()
+    buckets = {"OVERDUE": [], "TODAY": [], "THIS WEEK": [], "LATER": [], "NO DATE": []}
+    for b in boards(doc):
+        for g in b["groups"]:
+            for it in g["items"]:
+                if is_done(b, it):
+                    continue
+                d = it.get("due")
+                key = ("NO DATE" if not d else "OVERDUE" if d < t else "TODAY" if d == t
+                       else "THIS WEEK" if d <= horizon else "LATER")
+                buckets[key].append((b, g, it))
+    for key, rows in buckets.items():
+        if not rows:
+            continue
+        rows.sort(key=lambda r: r[2].get("due") or "9999")
+        print(key)
+        for b, g, it in rows:
+            print(fmt_item(b, g, it) + f"  ({b['id']}/{g['name']})")
+
+def cmd_show(args):
+    if not args: die("usage: tb show <id>")
+    doc, _ = fetch()
+    b, g, it = find_item(doc, args[0], include_archive=True)
+    where = f"{b['id']}/{g['name']}" if g else f"{b['id']}/ARCHIVE (from {it.get('fromGroup')})"
+    print(f"id:      {it['id']}")
+    print(f"name:    {it['name']}")
+    print(f"where:   {where}")
+    print(f"status:  {status_of(b, it.get('status'))['label']} ({it.get('status')})")
+    print(f"due:     {it.get('due') or '-'}")
+    if it.get("notes"):
+        print(f"notes:   {it['notes']}")
+    for s in it.get("subitems") or []:
+        print(f"  sub {s['id']}  [{'x' if s.get('done') else ' '}] {s['name']}")
+
+def parse_flags(args, flags):
+    """split positional args from --flag value pairs"""
+    pos, out, i = [], {}, 0
+    while i < len(args):
+        if args[i] in flags:
+            if i + 1 >= len(args): die(f"{args[i]} needs a value")
+            out[args[i].lstrip('-')] = args[i + 1]
+            i += 2
+        else:
+            pos.append(args[i]); i += 1
+    return pos, out
+
+def cmd_add(args):
+    pos, fl = parse_flags(args, {"--board", "--group", "--due", "--status", "--notes"})
+    if not pos: die('usage: tb add "Task name" [--board work|personal] [--group NAME] [--due YYYY-MM-DD] [--status ID] [--notes TEXT]')
+    name = pos[0]
+    def fn(doc):
+        b = get_board(doc, fl.get("board", "personal"))
+        g = next((g for g in b["groups"] if g["name"].lower() == fl["group"].lower()), None) if "group" in fl else (b["groups"][0] if b["groups"] else None)
+        if g is None: die(f"no group '{fl.get('group')}' on board {b['id']}")
+        sid = fl.get("status", statuses_for(b)[0]["id"])
+        if not any(s["id"] == sid for s in statuses_for(b)):
+            die(f"status '{sid}' not on board {b['id']} (run: tb info)")
+        it = {"id": uid(), "name": name, "status": sid, "due": fl.get("due"),
+              "notes": fl.get("notes", ""), "subitems": [],
+              "createdAt": now_iso(), "updatedAt": now_iso()}
+        g["items"].append(it)
+        return f"added {it['id']} to {b['id']}/{g['name']}"
+    print(mutate(fn, f"add task: {name}"))
+
+def _touch(it):
+    it["updatedAt"] = now_iso()
+
+def cmd_complete(args):
+    if not args: die("usage: tb complete <id>")
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        ds = done_status(b)
+        if not ds: die(f"board {b['id']} has no done-type status")
+        it["status"] = ds["id"]; _touch(it)
+        return f"completed: {it['name']} [{ds['label']}]"
+    print(mutate(fn, "complete task"))
+
+def cmd_status(args):
+    if len(args) < 2: die("usage: tb status <id> <status-id>")
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        if not any(s["id"] == args[1] for s in statuses_for(b)):
+            die(f"status '{args[1]}' not on board {b['id']} (run: tb info)")
+        it["status"] = args[1]; _touch(it)
+        return f"{it['name']} -> {status_of(b, args[1])['label']}"
+    print(mutate(fn, "set status"))
+
+def cmd_due(args):
+    if len(args) < 2: die("usage: tb due <id> <YYYY-MM-DD|none>")
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        it["due"] = None if args[1] == "none" else args[1]; _touch(it)
+        return f"{it['name']} due {it['due'] or 'cleared'}"
+    print(mutate(fn, "set due date"))
+
+def cmd_rename(args):
+    if len(args) < 2: die('usage: tb rename <id> "New name"')
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        old, it["name"] = it["name"], args[1]; _touch(it)
+        return f"renamed '{old}' -> '{args[1]}'"
+    print(mutate(fn, "rename task"))
+
+def cmd_note(args):
+    if len(args) < 2: die('usage: tb note <id> "text"')
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        it["notes"] = args[1]; _touch(it)
+        return f"note set on {it['name']}"
+    print(mutate(fn, "set note"))
+
+def cmd_sub(args):
+    if len(args) < 2: die('usage: tb sub <id> "Subitem name"')
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        s = {"id": uid(), "name": args[1], "done": False}
+        it.setdefault("subitems", []).append(s); _touch(it)
+        return f"added sub {s['id']} to {it['name']}"
+    print(mutate(fn, "add subitem"))
+
+def cmd_check(args):
+    if len(args) < 2: die("usage: tb check <id> <sub-id>")
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        s = next((s for s in it.get("subitems", []) if s["id"].startswith(args[1])), None)
+        if not s: die(f"no subitem matching '{args[1]}'")
+        s["done"] = not s.get("done"); _touch(it)
+        return f"sub '{s['name']}' -> {'done' if s['done'] else 'not done'}"
+    print(mutate(fn, "toggle subitem"))
+
+def cmd_move(args):
+    pos, fl = parse_flags(args, {"--board"})
+    if len(pos) < 2: die('usage: tb move <id> "Group Name" [--board work|personal]')
+    def fn(doc):
+        b, g, it = find_item(doc, pos[0])
+        tb_ = get_board(doc, fl["board"]) if "board" in fl else b
+        tg = next((x for x in tb_["groups"] if x["name"].lower() == pos[1].lower()), None)
+        if not tg: die(f"no group '{pos[1]}' on board {tb_['id']}")
+        g["items"].remove(it)
+        if tb_ is not b and not any(s["id"] == it.get("status") for s in statuses_for(tb_)):
+            was = is_done(b, it)
+            ds = done_status(tb_)
+            it["status"] = ds["id"] if (was and ds) else statuses_for(tb_)[0]["id"]
+        tg["items"].append(it); _touch(it)
+        return f"moved {it['name']} -> {tb_['id']}/{tg['name']}"
+    print(mutate(fn, "move task"))
+
+def cmd_archive(args):
+    if not args: die("usage: tb archive <id>")
+    def fn(doc):
+        b, g, it = find_item(doc, args[0])
+        g["items"].remove(it)
+        b.setdefault("archive", []).append({**it, "fromGroup": g["name"], "archivedAt": now_iso()})
+        return f"archived: {it['name']}"
+    print(mutate(fn, "archive task"))
+
+def cmd_archive_done(args):
+    def fn(doc):
+        bs = [get_board(doc, args[0])] if args else boards(doc)
+        n = 0
+        for b in bs:
+            for g in b["groups"]:
+                for it in [i for i in g["items"] if is_done(b, i)]:
+                    g["items"].remove(it)
+                    b.setdefault("archive", []).append({**it, "fromGroup": g["name"], "archivedAt": now_iso()})
+                    n += 1
+        return f"archived {n} done task(s)"
+    print(mutate(fn, "archive done tasks"))
+
+def cmd_restore(args):
+    if not args: die("usage: tb restore <id>")
+    def fn(doc):
+        b, g, it = find_item(doc, args[0], include_archive=True)
+        if g is not None: die(f"{it['name']} is not archived")
+        b["archive"].remove(it)
+        target = next((x for x in b["groups"] if x["name"] == it.get("fromGroup")),
+                      b["groups"][0] if b["groups"] else None)
+        if target is None: die(f"board {b['id']} has no groups to restore into")
+        it.pop("fromGroup", None); it.pop("archivedAt", None)
+        _touch(it)
+        target["items"].append(it)
+        return f"restored {it['name']} -> {b['id']}/{target['name']}"
+    print(mutate(fn, "restore task"))
+
+def cmd_delete(args):
+    if not args: die("usage: tb delete <id>")
+    def fn(doc):
+        b, g, it = find_item(doc, args[0], include_archive=True)
+        (g["items"] if g is not None else b["archive"]).remove(it)
+        return f"deleted: {it['name']}"
+    print(mutate(fn, "delete task"))
+
+def cmd_raw(args):
+    doc, _ = fetch()
+    json.dump(doc, sys.stdout, indent=2, ensure_ascii=False)
+    print()
+
+HELP = """tb — TaskBoard CLI (data: {repo}/{path})
+
+read:
+  tb info                          boards, groups, statuses (status ids!)
+  tb list [board] [--all]          active tasks (--all includes done)
+  tb week                          overdue/today/this-week agenda, all boards
+  tb show <id>                     full task detail incl. subitem ids
+  tb raw                           dump tasks.json
+
+write:
+  tb add "Name" [--board B] [--group G] [--due YYYY-MM-DD] [--status ID] [--notes TEXT]
+  tb complete <id>                 set the board's done-type status
+  tb status <id> <status-id>       set any status (ids from: tb info)
+  tb due <id> <YYYY-MM-DD|none>
+  tb rename <id> "New name"
+  tb note <id> "text"
+  tb sub <id> "Subitem"            add a subitem
+  tb check <id> <sub-id>           toggle a subitem
+  tb move <id> "Group" [--board B]
+  tb archive <id> | tb archive-done [board] | tb restore <id>
+  tb delete <id>                   permanent (archive is the soft option)
+
+<id> may be any unique prefix of a task id. add defaults: board personal,
+first group, first status. Writes auto-retry on edit conflicts.
+""".format(repo=REPO, path=PATH)
+
+COMMANDS = {
+    "info": cmd_info, "list": cmd_list, "week": cmd_week, "show": cmd_show,
+    "add": cmd_add, "complete": cmd_complete, "status": cmd_status,
+    "due": cmd_due, "rename": cmd_rename, "note": cmd_note,
+    "sub": cmd_sub, "check": cmd_check, "move": cmd_move,
+    "archive": cmd_archive, "archive-done": cmd_archive_done,
+    "restore": cmd_restore, "delete": cmd_delete, "raw": cmd_raw,
+}
+
+def main():
+    argv = [a for a in sys.argv[1:] if a != "--all"]
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(HELP); return
+    if not TOKEN:
+        die("TASKBOARD_TOKEN env var is not set")
+    cmd = COMMANDS.get(argv[0])
+    if not cmd:
+        die(f"unknown command '{argv[0]}' (try: tb help)")
+    try:
+        cmd(argv[1:])
+    except urllib.error.HTTPError as e:
+        die(f"GitHub API {e.code}: {e.read().decode()[:300]}")
+
+if __name__ == "__main__":
+    main()
