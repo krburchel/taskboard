@@ -131,6 +131,8 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
 .popmenu button.plain{color:var(--text);font-weight:400;text-align:left}
 .popmenu button.plain:hover{background:var(--bg)}
 .popmenu button.danger{color:var(--danger)}
+.popmenu input[type=date]{border:1px solid var(--border);border-radius:6px;padding:7px 8px;background:var(--bg);color:var(--text);font:inherit;width:100%;min-width:170px;color-scheme:light}
+html.dark .popmenu input[type=date]{color-scheme:dark}
 
 /* ---------- kanban ---------- */
 .kanban{display:flex;gap:12px;overflow-x:auto;align-items:flex-start;padding-bottom:12px}
@@ -270,7 +272,8 @@ function migrateStatuses(){
   for (const b of data.boards) if (!b.statuses) { b.statuses = DEFAULT_STATUSES.map(s => ({ ...s })); changed = true; }
   return changed;
 }
-function todayStr(){ const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function dateStr(offset){ const d = new Date(); d.setDate(d.getDate()+offset); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function todayStr(){ return dateStr(0); }
 function fmtDue(due){
   if (!due) return "+ date";
   const [y,m,d] = due.split("-").map(Number);
@@ -569,7 +572,7 @@ function wireTable(b){
     if (f && el.value.trim()) { f.item.name = el.value.trim(); touch(f.item); markDirty(); }
   });
   main.querySelectorAll("[data-status]").forEach(el => el.onclick = (e) => statusMenu(e, el.dataset.status));
-  main.querySelectorAll("[data-due]").forEach(el => el.onclick = () => pickDue(el));
+  main.querySelectorAll("[data-due]").forEach(el => el.onclick = (e) => dueMenu(e, el.dataset.due));
   main.querySelectorAll("[data-imenu]").forEach(el => el.onclick = (e) => itemMenu(e, el.dataset.imenu));
 
   // --- drag & drop: reorder within a group, drop into another group ---
@@ -675,26 +678,43 @@ function wireTable(b){
   };
 }
 
-function pickDue(btn){
-  const id = btn.dataset.due;
-  const f = findItem(id);
+function dueMenu(e, itemId){
+  e.stopPropagation();
+  const f = findItem(itemId);
   if (!f) return;
-  const inp = document.createElement("input");
-  inp.type = "date";
-  inp.value = f.item.due || "";
-  inp.style.cssText = "position:fixed;opacity:0;pointer-events:none;left:0;top:0";
-  document.body.appendChild(inp);
-  inp.onchange = () => { f.item.due = inp.value || null; touch(f.item); markDirty(); render(); inp.remove(); };
-  // blur without change = cleared via the picker's Clear button on some platforms
-  inp.addEventListener("blur", () => setTimeout(() => inp.remove(), 200));
-  inp.showPicker ? inp.showPicker() : inp.click();
+  let changed = false;
+  const m = openMenu(e,
+    `<input type="date" data-din value="${f.item.due || ""}">
+     <button class="plain" data-q="0">Today</button>
+     <button class="plain" data-q="1">Tomorrow</button>
+     <button class="plain" data-q="7">In a week</button>
+     <button class="plain" data-q="clear">No date</button>`,
+    () => { if (changed) render(); });
+  // iOS fires change on every picker-wheel tick, so commit silently and
+  // re-render only when the menu closes
+  m.querySelector("[data-din]").addEventListener("change", (ev) => {
+    f.item.due = ev.target.value || null;
+    touch(f.item); markDirty(); changed = true;
+  });
+  m.querySelectorAll("[data-q]").forEach(el => el.onclick = () => {
+    f.item.due = el.dataset.q === "clear" ? null : dateStr(+el.dataset.q);
+    touch(f.item); markDirty(); changed = true;
+    closeMenu();
+  });
 }
 
 /* ----- menus ----- */
 let menuEl = null;
-function closeMenu(){ if (menuEl) { menuEl.remove(); menuEl = null; } }
-function openMenu(e, html){
+let menuOnClose = null;
+function closeMenu(){
+  if (!menuEl) return;
+  menuEl.remove(); menuEl = null;
+  const cb = menuOnClose; menuOnClose = null;
+  if (cb) cb();
+}
+function openMenu(e, html, onClose){
   closeMenu();
+  menuOnClose = onClose || null;
   menuEl = document.createElement("div");
   menuEl.className = "popmenu";
   menuEl.innerHTML = html;
