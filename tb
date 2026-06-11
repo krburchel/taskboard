@@ -17,8 +17,25 @@ import urllib.request, urllib.error
 
 REPO  = os.environ.get("TASKBOARD_REPO", "krburchel/taskboard-data")
 PATH  = os.environ.get("TASKBOARD_PATH", "tasks.json")
-TOKEN = os.environ.get("TASKBOARD_TOKEN") or os.environ.get("GITHUB_TOKEN")
 API   = f"https://api.github.com/repos/{REPO}/contents/{PATH}"
+
+TOKEN_FILES = [os.path.expanduser("~/.config/taskboard/token"), "/etc/taskboard/token"]
+
+def load_token():
+    t = os.environ.get("TASKBOARD_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if t:
+        return t
+    for p in TOKEN_FILES:
+        try:
+            with open(p) as f:
+                t = f.read().strip()
+            if t:
+                return t
+        except OSError:
+            pass
+    return None
+
+TOKEN = load_token()
 
 DEFAULT_STATUSES = [
     {"id": "not_started", "label": "Not Started",   "color": "#c4c4c4", "done": False},
@@ -405,7 +422,8 @@ def main():
     if not argv or argv[0] in ("help", "-h", "--help"):
         print(HELP); return
     if not TOKEN:
-        die("TASKBOARD_TOKEN env var is not set")
+        die("no token: set TASKBOARD_TOKEN, or put the PAT in "
+            + " or ".join(TOKEN_FILES) + " (chmod 600)")
     cmd = COMMANDS.get(argv[0])
     if not cmd:
         die(f"unknown command '{argv[0]}' (try: tb help)")

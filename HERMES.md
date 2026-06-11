@@ -7,12 +7,23 @@ curl -fsSL https://raw.githubusercontent.com/krburchel/taskboard/main/tb -o /usr
 chmod +x /usr/local/bin/tb
 ```
 
-Requires python3 (stdlib only). Then make the token available to Hermes's
-shell sessions, e.g. in the environment Hermes runs under:
+Requires python3 (stdlib only). Then store the token in a protected file —
+this survives reboots and doesn't depend on Hermes's environment:
 
 ```bash
-export TASKBOARD_TOKEN="github_pat_..."   # fine-grained PAT: taskboard-data only, Contents read/write
+mkdir -p ~/.config/taskboard
+nano ~/.config/taskboard/token        # paste the PAT, save (one line, nothing else)
+chmod 600 ~/.config/taskboard/token
 ```
+
+(`tb` looks for the token in: `TASKBOARD_TOKEN` env var, then
+`~/.config/taskboard/token`, then `/etc/taskboard/token`. Use
+`/etc/taskboard/token` instead if Hermes runs as a different user —
+make it readable by that user only.)
+
+**Never paste the PAT into the Hermes chat** (Telegram/Discord messages are
+logged); put it on the server over SSH yourself. If the token has ever
+appeared in chat, revoke it on GitHub and generate a new one.
 
 Sanity check: `tb info` should print the boards.
 
