@@ -197,6 +197,24 @@ html.dark .popmenu input[type=date]{color-scheme:dark}
 .toast.show{opacity:1}
 
 /* ---------- mobile ---------- */
+#printview{display:none}
+@media print{
+  body > :not(#printview){display:none !important}
+  html, body{background:#fff;color:#000}
+  #printview{display:block;color:#000;font:12px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding:4px}
+  #printview h1{font-size:19px;margin:0}
+  #printview .pdate{color:#555;margin:1px 0 14px;font-size:11px}
+  #printview h2{font-size:15px;margin:16px 0 6px;border-bottom:2px solid #000;padding-bottom:3px;break-after:avoid}
+  #printview .pgroup{margin:0 0 12px;break-inside:avoid}
+  #printview h3{font-size:12px;margin:8px 0 3px}
+  #printview table{width:100%;border-collapse:collapse}
+  #printview th,#printview td{border:1px solid #999;padding:3px 7px;text-align:left;vertical-align:top;font-size:11px}
+  #printview th{background:#eee;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+  #printview .pdone{text-decoration:line-through;color:#777}
+  #printview .psub{margin:2px 0 0 10px;color:#333}
+  #printview .pnotes{margin:2px 0 0 10px;color:#555;font-style:italic}
+  #printview .parch{color:#666;font-size:10px;margin:4px 0 0}
+}
 @media (max-width:640px){
   main{padding:10px}
   .col-hdr{display:none}
@@ -217,6 +235,7 @@ html.dark .popmenu input[type=date]{color-scheme:dark}
   <div class="hdr-top">
     <div class="logo"><span class="dot"></span>TaskBoard</div>
     <div class="sync" id="sync"><span class="ind"></span><span id="syncTxt">loading</span></div>
+    <button class="icon-btn" id="printBtn" title="Print backup">&#128424;&#xFE0F;</button>
     <button class="icon-btn" id="themeBtn" title="Theme: auto"></button>
     <button class="icon-btn" id="refreshBtn" title="Refresh from GitHub">&#x21bb;</button>
     <button class="icon-btn" id="settingsBtn" title="Settings">&#9881;</button>
@@ -224,6 +243,7 @@ html.dark .popmenu input[type=date]{color-scheme:dark}
   <div class="tabs" id="tabs"></div>
 </header>
 <main id="main"></main>
+<div id="printview"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1037,6 +1057,36 @@ document.getElementById("themeBtn").onclick = () => {
 };
 darkMedia.addEventListener("change", () => { if (ui.theme === "auto") applyTheme(); });
 applyTheme();
+
+/* ----- print (paper backup) ----- */
+function buildPrintView(){
+  let html = `<h1>TaskBoard</h1><p class="pdate">Printed ${esc(new Date().toLocaleString(undefined,{dateStyle:"full",timeStyle:"short"}))}</p>`;
+  for (const b of data.boards) {
+    html += `<h2>${esc(b.name)}</h2>`;
+    for (const g of b.groups) {
+      html += `<div class="pgroup"><h3>${esc(g.name)} (${g.items.length})</h3>`;
+      if (g.items.length) {
+        html += `<table><tr><th style="width:58%">Task</th><th>Status</th><th>Due</th></tr>`;
+        for (const it of g.items) {
+          const subs  = (it.subitems || []).map(s => `<div class="psub">${s.done ? "&#9745;" : "&#9744;"} ${esc(s.name)}</div>`).join("");
+          const notes = it.notes ? `<div class="pnotes">${esc(it.notes)}</div>` : "";
+          html += `<tr><td><span class="${isDone(b,it) ? "pdone" : ""}">${esc(it.name)}</span>${subs}${notes}</td>
+            <td>${esc(statusOf(b, it.status).label)}</td><td>${it.due ? esc(fmtDue(it.due)) : ""}</td></tr>`;
+        }
+        html += `</table>`;
+      }
+      html += `</div>`;
+    }
+    const arch = b.archive || [];
+    if (arch.length) html += `<p class="parch">+ ${arch.length} archived task${arch.length===1?"":"s"} (not printed)</p>`;
+  }
+  document.getElementById("printview").innerHTML = html;
+}
+document.getElementById("printBtn").onclick = () => {
+  if (!data) return;
+  buildPrintView();
+  window.print();
+};
 
 /* ----- toast ----- */
 let toastTimer = null;
