@@ -131,6 +131,12 @@ main{padding:16px;max-width:1100px;margin:0 auto;padding-bottom:80px}
 .popmenu button.plain{color:var(--text);font-weight:400;text-align:left}
 .popmenu button.plain:hover{background:var(--bg)}
 .popmenu button.danger{color:var(--danger)}
+.popmenu .pm-board{font-weight:600;font-size:13px;padding:6px 8px 2px;cursor:pointer;user-select:none}
+.popmenu .pm-board:hover{color:var(--accent)}
+.popmenu label.pm-grp{display:flex;align-items:center;gap:8px;padding:5px 8px 5px 16px;border-radius:4px;font-size:13px;cursor:pointer}
+.popmenu label.pm-grp:hover{background:var(--bg)}
+.popmenu label.pm-grp input{accent-color:var(--accent)}
+.popmenu button.pm-print{background:var(--accent);margin-top:4px}
 .popmenu input[type=date]{border:1px solid var(--border);border-radius:6px;padding:7px 8px;background:var(--bg);color:var(--text);font:inherit;width:100%;min-width:170px;color-scheme:light}
 html.dark .popmenu input[type=date]{color-scheme:dark}
 
@@ -1059,12 +1065,15 @@ darkMedia.addEventListener("change", () => { if (ui.theme === "auto") applyTheme
 applyTheme();
 
 /* ----- print (paper backup) ----- */
-function buildPrintView(boards){
-  const title = boards.length === 1 ? `TaskBoard — ${boards[0].name}` : "TaskBoard";
+function buildPrintView(groupIds){
+  const picked = data.boards
+    .map(b => ({ b, groups: b.groups.filter(g => groupIds.has(g.id)) }))
+    .filter(p => p.groups.length);
+  const title = picked.length === 1 ? `TaskBoard — ${picked[0].b.name}` : "TaskBoard";
   let html = `<h1>${esc(title)}</h1><p class="pdate">Printed ${esc(new Date().toLocaleString(undefined,{dateStyle:"full",timeStyle:"short"}))}</p>`;
-  for (const b of boards) {
+  for (const { b, groups } of picked) {
     html += `<h2>${esc(b.name)}</h2>`;
-    for (const g of b.groups) {
+    for (const g of groups) {
       html += `<div class="pgroup"><h3>${esc(g.name)} (${g.items.length})</h3>`;
       if (g.items.length) {
         html += `<table><tr><th style="width:58%">Task</th><th>Status</th><th>Due</th></tr>`;
@@ -1086,14 +1095,24 @@ function buildPrintView(boards){
 document.getElementById("printBtn").onclick = (e) => {
   if (!data) return;
   const m = openMenu(e,
-    data.boards.map(b => `<button class="plain" data-pboard="${b.id}">&#128424;&#xFE0F; ${esc(b.name)} only</button>`).join("") +
-    `<button class="plain" data-pboard="*">&#128424;&#xFE0F; All boards</button>`);
-  m.querySelectorAll("[data-pboard]").forEach(el => el.onclick = () => {
-    const pick = el.dataset.pboard;
-    buildPrintView(pick === "*" ? data.boards : data.boards.filter(b => b.id === pick));
+    data.boards.map(b =>
+      `<div class="pm-board" data-bhdr="${b.id}" title="Toggle all">${esc(b.name)}</div>` +
+      b.groups.map(g => `<label class="pm-grp"><input type="checkbox" checked data-pg="${g.id}" data-pb="${b.id}">${esc(g.name)}</label>`).join("")
+    ).join("") +
+    `<button class="pm-print" data-doprint>&#128424;&#xFE0F; Print selected</button>`);
+  // clicking a board name checks/unchecks all of its groups
+  m.querySelectorAll("[data-bhdr]").forEach(el => el.onclick = () => {
+    const boxes = [...m.querySelectorAll(`[data-pb="${el.dataset.bhdr}"]`)];
+    const all = boxes.every(x => x.checked);
+    boxes.forEach(x => x.checked = !all);
+  });
+  m.querySelector("[data-doprint]").onclick = () => {
+    const ids = new Set([...m.querySelectorAll("[data-pg]:checked")].map(x => x.dataset.pg));
+    if (!ids.size) { toast("Nothing selected"); return; }
+    buildPrintView(ids);
     closeMenu();
     window.print();
-  });
+  };
 };
 
 /* ----- toast ----- */
