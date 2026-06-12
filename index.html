@@ -1059,9 +1059,10 @@ darkMedia.addEventListener("change", () => { if (ui.theme === "auto") applyTheme
 applyTheme();
 
 /* ----- print (paper backup) ----- */
-function buildPrintView(){
-  let html = `<h1>TaskBoard</h1><p class="pdate">Printed ${esc(new Date().toLocaleString(undefined,{dateStyle:"full",timeStyle:"short"}))}</p>`;
-  for (const b of data.boards) {
+function buildPrintView(boards){
+  const title = boards.length === 1 ? `TaskBoard — ${boards[0].name}` : "TaskBoard";
+  let html = `<h1>${esc(title)}</h1><p class="pdate">Printed ${esc(new Date().toLocaleString(undefined,{dateStyle:"full",timeStyle:"short"}))}</p>`;
+  for (const b of boards) {
     html += `<h2>${esc(b.name)}</h2>`;
     for (const g of b.groups) {
       html += `<div class="pgroup"><h3>${esc(g.name)} (${g.items.length})</h3>`;
@@ -1082,10 +1083,17 @@ function buildPrintView(){
   }
   document.getElementById("printview").innerHTML = html;
 }
-document.getElementById("printBtn").onclick = () => {
+document.getElementById("printBtn").onclick = (e) => {
   if (!data) return;
-  buildPrintView();
-  window.print();
+  const m = openMenu(e,
+    data.boards.map(b => `<button class="plain" data-pboard="${b.id}">&#128424;&#xFE0F; ${esc(b.name)} only</button>`).join("") +
+    `<button class="plain" data-pboard="*">&#128424;&#xFE0F; All boards</button>`);
+  m.querySelectorAll("[data-pboard]").forEach(el => el.onclick = () => {
+    const pick = el.dataset.pboard;
+    buildPrintView(pick === "*" ? data.boards : data.boards.filter(b => b.id === pick));
+    closeMenu();
+    window.print();
+  });
 };
 
 /* ----- toast ----- */
