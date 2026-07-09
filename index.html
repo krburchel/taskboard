@@ -467,11 +467,37 @@ function render(){
   closeMenu();
   if (!cfg) { document.getElementById("header").hidden = true; renderSetup(); return; }
   if (!data) return;
+  const typing = captureTyping();
   document.getElementById("header").hidden = false;
   renderTabs();
   if (ui.view === "kanban") renderKanban();
   else if (ui.view === "week") renderWeek();
   else renderTable();
+  restoreTyping(typing);
+}
+
+// Re-rendering rebuilds main's DOM, which would discard text the user is
+// mid-typing (background sync re-renders every 90s). Capture the focused
+// field before a render and restore text + caret + focus after.
+function captureTyping(){
+  const a = document.activeElement;
+  if (!a || !main.contains(a) || (a.tagName !== "INPUT" && a.tagName !== "TEXTAREA") || a.type === "checkbox") return null;
+  let sel = null;
+  for (const k of ["irename","grename","subrename","notes"])
+    if (a.dataset[k] !== undefined) sel = `[data-${k}="${a.dataset[k]}"]`;
+  if (!sel) {
+    const f = a.closest("[data-additem],[data-addsub]");
+    if (f) sel = (f.dataset.additem ? `[data-additem="${f.dataset.additem}"]` : `[data-addsub="${f.dataset.addsub}"]`) + " input";
+  }
+  return sel ? { sel, value: a.value, start: a.selectionStart, end: a.selectionEnd } : null;
+}
+function restoreTyping(t){
+  if (!t) return;
+  const el = main.querySelector(t.sel);
+  if (!el) return;
+  el.value = t.value;
+  el.focus();
+  try { el.setSelectionRange(t.start, t.end); } catch {}
 }
 
 function renderTabs(){
@@ -590,6 +616,7 @@ function wireTable(b){
     const g = b.groups.find(x => x.id === f.dataset.additem);
     const now = new Date().toISOString();
     g.items.push({ id: uid(), name, status: statusesFor(b)[0].id, due: null, notes: "", subitems: [], createdAt: now, updatedAt: now });
+    f.querySelector("input").value = "";
     markDirty(); render();
     main.querySelector(`[data-additem="${g.id}"] input`)?.focus();
   });
@@ -689,6 +716,7 @@ function wireTable(b){
     if (!name) return;
     const f = findItem(fm.dataset.addsub);
     f.item.subitems.push({ id: uid(), name, done: false });
+    fm.querySelector("input").value = "";
     touch(f.item); markDirty(); render();
     main.querySelector(`[data-addsub="${f.item.id}"] input`)?.focus();
   });
