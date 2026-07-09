@@ -1201,11 +1201,36 @@ window.addEventListener("online", () => { if (dirty) saveNow(); else refresh(fal
 setInterval(() => { if (cfg && !dirty && !document.hidden) refresh(false); }, 90000);
 window.addEventListener("beforeunload", (e) => { if (dirty) { saveNow(); e.preventDefault(); } });
 
+// Quick add via URL: ?add=Task+name[&board=work|personal][&due=today|tomorrow|YYYY-MM-DD]
+// Lets an iOS Shortcut (or bookmark) capture a task without navigating the app.
+function handleQuickAdd(){
+  const p = new URLSearchParams(location.search);
+  const name = (p.get("add") || "").trim();
+  if (!name) return;
+  history.replaceState(null, "", location.pathname); // strip the query so reload/restore can't double-add
+  if (!data) { toast("Couldn't add — no connection"); return; }
+  const want = (p.get("board") || "").toLowerCase();
+  const b = data.boards.find(x => x.id.toLowerCase() === want || x.name.toLowerCase() === want)
+         || data.boards.find(x => x.id === "personal") || data.boards[0];
+  const g = b.groups[0];
+  if (!g) { toast("No group on " + b.name); return; }
+  let due = (p.get("due") || "").toLowerCase();
+  due = due === "today" ? todayStr() : due === "tomorrow" ? dateStr(1)
+      : /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : null;
+  const now = new Date().toISOString();
+  g.items.push({ id: uid(), name, status: statusesFor(b)[0].id, due, notes: "", subitems: [], createdAt: now, updatedAt: now });
+  ui.board = b.id; if (ui.view === "week") ui.view = "table"; saveUI();
+  markDirty(); render();
+  toast("Added to " + b.name + ": " + name);
+  saveNow(); // don't wait for the debounce — iOS may kill the page quickly
+}
+
 (async function boot(){
   if (!cfg) { render(); return; }
   const cached = loadJSON(LS_CACHE);
   if (cached) { data = cached; if (!ui.board) ui.board = data.boards[0]?.id; render(); }
   await refresh(false);
+  handleQuickAdd();
   if (!data) { // no cache and fetch failed
     setSync("err", "offline");
     main.innerHTML = `<div class="empty">Can’t reach GitHub and no local copy yet. Connect to the internet and reload.</div>`;

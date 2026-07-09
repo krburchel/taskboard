@@ -27,6 +27,20 @@ GitHub Pages; installable on PC, Mac, and iPhone.
 - Offline-capable: last-synced data is cached locally; edits retry until they
   reach GitHub
 
+## Quick add via URL
+
+Opening the app with an `add` query parameter creates a task and saves it
+immediately — handy for an iOS Shortcut or a browser bookmark:
+
+```
+https://krburchel.github.io/taskboard/?add=Task+name
+    &board=work|personal          (optional, default personal)
+    &due=today|tomorrow|YYYY-MM-DD (optional)
+```
+
+The device needs the token configured once in that browser (the query is
+stripped from the URL after the add, so reloads can't double-add).
+
 ## Agent access
 
 Agents (Claude, Hermes, …) interact with the same `tasks.json` — see the
