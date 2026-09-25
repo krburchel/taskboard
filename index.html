@@ -269,6 +269,7 @@ html.dark .popmenu input[type=date]{color-scheme:dark}
 
 const LS_CFG = "taskboard-config";
 const LS_CACHE = "taskboard-cache";
+const LS_DIRTY = "taskboard-dirty";   // unsaved local edits survive reloads
 const LS_UI = "taskboard-ui";
 
 const DEFAULT_STATUSES = [
@@ -285,7 +286,8 @@ let ui  = loadJSON(LS_UI)  || { view: "table", board: null, collapsed: {} };
 if (!ui.theme) ui.theme = "auto";            // auto | dark | light
 let data = null;                              // the tasks document
 let sha = null;                               // git blob sha of tasks.json
-let dirty = false;
+let dirty = localStorage.getItem(LS_DIRTY) === "1";
+let authFailed = false;               // GitHub rejected the token (expired/revoked)
 let saveTimer = null;
 let saving = false;
 let expanded = new Set();                     // expanded item ids (this session)
@@ -338,7 +340,7 @@ function b64decode(b64){ return new TextDecoder().decode(Uint8Array.from(atob(b6
 async function ghGet(c){
   const r = await fetch(contentsURL(c) + "?t=" + Date.now(), { headers: ghHeaders(c.token) });
   if (r.status === 404) return { missing: true };
-  if (!r.ok) throw new Error("GitHub read failed (" + r.status + ")");
+  if (!r.ok) { const e = new Error("GitHub read failed (" + r.status + ")"); e.status = r.status; throw e; }
   const j = await r.json();
   return { doc: JSON.parse(b64decode(j.content)), sha: j.sha };
 }
@@ -351,9 +353,19 @@ async function ghPut(c, doc, prevSha){
   return (await r.json()).content.sha;
 }
 
+function setDirty(v){
+  dirty = v;
+  try { v ? localStorage.setItem(LS_DIRTY, "1") : localStorage.removeItem(LS_DIRTY); } catch {}
+}
+function onAuthFail(){
+  authFailed = true;
+  setSync("err", "token expired");
+  render();
+}
+
 function markDirty(){
   data.updatedAt = new Date().toISOString();
-  dirty = true;
+  setDirty(true);
   storeJSON(LS_CACHE, data);
   setSync("dirty", "saving…");
   clearTimeout(saveTimer);
@@ -374,9 +386,10 @@ async function saveNow(){
         sha = await ghPut(cfg, data, latest.sha);
       } else throw e;
     }
-    dirty = false;
+    setDirty(false);
     setSync("ok", "synced");
   } catch (e) {
+    if (e.status === 401) { onAuthFail(); return; }
     setSync("err", navigator.onLine ? "save failed" : "offline — will retry");
     saveTimer = setTimeout(saveNow, 15000);
   } finally {
@@ -398,6 +411,7 @@ async function refresh(showToast){
     render();
     if (showToast) toast("Refreshed");
   } catch (e) {
+    if (e.status === 401) { onAuthFail(); return; }
     setSync("err", navigator.onLine ? "sync error" : "offline");
   }
 }
@@ -472,7 +486,7 @@ const main = document.getElementById("main");
 
 function render(){
   closeMenu();
-  if (!cfg) { document.getElementById("header").hidden = true; renderSetup(); return; }
+  if (!cfg || authFailed) { document.getElementById("header").hidden = true; renderSetup(authFailed ? cfg : undefined); return; }
   if (!data) return;
   const typing = captureTyping();
   document.getElementById("header").hidden = false;
@@ -983,10 +997,11 @@ function renderWeek(){
 function renderSetup(existing){
   const c = existing || { token: "", repo: "krburchel/taskboard-data", path: "tasks.json" };
   main.innerHTML = `<div class="panel">
-    <h1>${existing ? "Settings" : "Welcome to TaskBoard"}</h1>
+    <h1>${authFailed ? "Reconnect TaskBoard" : existing ? "Settings" : "Welcome to TaskBoard"}</h1>
+    ${authFailed ? `<p class="setup-msg err">GitHub rejected the saved token — it has probably expired. Create a new fine-grained token and paste it below.${dirty ? " Your unsaved changes on this device are kept and will be uploaded when you reconnect." : ""}</p>` : ""}
     <p>Tasks are stored as <code>tasks.json</code> in a private GitHub repo so every device (and your agents) sees the same board.</p>
     <label>GitHub personal access token</label>
-    <input id="suToken" type="password" value="${esc(c.token)}" placeholder="github_pat_…">
+    <input id="suToken" type="password" value="${authFailed ? "" : esc(c.token)}" placeholder="github_pat_…">
     <div class="hint">Create a <b>fine-grained token</b> at github.com &rarr; Settings &rarr; Developer settings &rarr; Fine-grained tokens. Grant it access to <b>only the data repo</b> with <b>Contents: Read and write</b>.</div>
     <label>Data repository</label>
     <input id="suRepo" value="${esc(c.repo)}" placeholder="krburchel/taskboard-data">
@@ -1012,11 +1027,14 @@ function renderSetup(existing){
         const doc = starterData();
         const newSha = await ghPut(c2, doc, null);
         data = doc; sha = newSha;
+      } else if (dirty && data) {
+        // edits made while disconnected: write them on top of the remote copy
+        sha = await ghPut(c2, data, res.sha);
       } else {
         data = res.doc; sha = res.sha;
       }
       cfg = c2; storeJSON(LS_CFG, cfg); storeJSON(LS_CACHE, data);
-      dirty = false;
+      setDirty(false); authFailed = false;
       ui.board = data.boards[0]?.id; saveUI();
       setSync("ok", "synced");
       render();
@@ -1028,7 +1046,7 @@ function renderSetup(existing){
   const so = document.getElementById("suSignout");
   if (so) so.onclick = () => {
     if (!confirm("Remove the token from this device? Your data on GitHub is untouched.")) return;
-    localStorage.removeItem(LS_CFG); localStorage.removeItem(LS_CACHE);
+    localStorage.removeItem(LS_CFG); localStorage.removeItem(LS_CACHE); setDirty(false); authFailed = false;
     cfg = null; data = null; sha = null; render();
   };
 }
